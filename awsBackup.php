@@ -12,6 +12,8 @@ class AwsBackup
 	private $_root;
 	private $_verbose = false;
 	private $_info = false;
+	private $_debug = false;
+	private $_compareHashes = false;
 	private $_largeFileSize = 20971520; //20MB
 	private $_multiPartSize = 20971520; //20MB
 
@@ -26,24 +28,40 @@ class AwsBackup
 		$this->_client = $client;
 	}
 
+	function setDebug($debug = true)
+	{
+		$this->_debug = $debug;
+		return $this;
+	}
+
 	function setVerbose($verbose = true)
 	{
 		$this->_verbose = $verbose;
+		return $this;
 	}
 
 	function setInfo($info = true)
 	{
 		$this->_info = $info;
+		return $this;
 	}
 
 	function setLargeFileSize($size)
 	{
 		$this->_largeFileSize = $size;
+		return $this;
 	}
 
 	function setMultiPartSize($size)
 	{
 		$this->_multiPartSize = $size;
+		return $this;
+	}
+
+	function setCompareHashes($compare = true)
+	{
+		$this->_compareHashes = $compare;
+		return $this;
 	}
 
 	//get a list of objects in the bucket
@@ -63,9 +81,7 @@ class AwsBackup
 					'Bucket'=>$this->_bucket,
 					'Key'=>$content['Key'],
 				));
-				$remote[$filename] = array(
-					'hash'=>$head['Metadata']['hash'],
-				);
+				$remote[$filename] = $head['Metadata'];
 			#}
 		}
 		return $remote;
@@ -91,6 +107,11 @@ class AwsBackup
 			{
 				continue;
 			}
+			//skip directories with "/Trash/" in the name
+			if (strpos($entry, "/Trash") !== false)
+			{
+				continue;
+			}
 
 			if (is_dir($dir . "/" . $entry))
 			{
@@ -103,12 +124,18 @@ class AwsBackup
 
 				//found a file, calculate its hash to identify its contents
 				$filename = "$dir/$entry";
-				if ($this->_verbose) echo "Getting hash for $filename \n";
 				$key = substr($filename, strlen($this->_root)+1);
-				$hash = hash_file("md5", $filename); 
+				$modified = filemtime($filename);
 				$local[$key] = array(
-					'hash'=>$hash,
+					//'hash'=>$hash,
+					'modified'=>date("Y-m-d H:i:s", $modified),
 				);
+				if ($this->_compareHashes)
+				{
+					if ($this->_verbose) echo "Getting hash for $filename \n";
+					$hash = hash_file("md5", $filename); 
+					$local[$key]['hash'] = $hash;
+				}
 			}
 		}
 	}
@@ -122,17 +149,19 @@ class AwsBackup
 				'Key'=>$key,
 			));
 		}
+		return $this;
 	}
 
 	function addFiles($files)
 	{
 		foreach ($files as $key=>$item)
 		{
-			$this->putFile($key, $item['hash']);
+			$this->putFile($key, $item);
 		}
+		return $this;
 	}
 
-	function putFile($key, $hash)
+	function putFile($key, $item)
 	{
 		//Store full name, including containing directory
 		$filename = $this->_root . "/" . $key;
@@ -142,7 +171,18 @@ class AwsBackup
 		{
 			$multipart = true;
 		}
-
+		if ($this->_compareHashes)
+		{
+			if (!array_key_exists('hash', $item))
+			{
+				if ($this->_verbose) echo "Getting hash for $filename \n";
+				$hash = hash_file("md5", $filename); 
+				$item = array_merge($item, array('hash'=>$hash));
+			}
+		}
+		$metadata = $item['metadata'];
+		if ($this->_debug) echo "metadata:\n";
+		if ($this->_debug) print_r($metadata);
 		$fr = fopen($filename, 'r');
 		if (!$multipart)
 		{
@@ -151,7 +191,8 @@ class AwsBackup
 				'Bucket'=>$this->_bucket,
 				'Key'=>$key,
 				'Body'=>$fr,
-				'Metadata'=>array('hash'=>$hash,),
+				//'Metadata'=>array('hash'=>$hash,),
+				'Metadata'=>$metadata,
 			));
 			if ($this->_info) echo "Complete\n";
 		}
@@ -161,7 +202,7 @@ class AwsBackup
 			$result = $this->_client->CreateMultipartUpload(array(
 				'Bucket'=>$this->_bucket,
 				'Key'=>$key,
-				'Metadata'=>array('hash'=>$hash,),
+				'Metadata'=>$metadata,
 			));
 			$uploadId = $result['UploadId'];
 			$position = 0;
@@ -208,26 +249,41 @@ class AwsBackup
 
 	function filesEqual($a, $b)
 	{
+		//TODO files should count as equal if hash matches but modified doesn't
+		$keysToCompare = array('modified');
+		if ($this->_compareHashes)
+		{
+			$keysToCompare[] = 'hash';
+		}
 		$diff = array();
 		foreach ($a as $key=>$item)
 		{
 			//check if file in a exists in b
 			if (array_key_exists($key, $b)) 
 			{ //file does exist
-				if ($b[$key] !== $item) 
-				{ //contents different
-					//$diff[] = $key;
-					$diff[$key] = array_merge($item, array(
-						"action"=>"Update",
-					));
+				foreach ($keysToCompare as $criteria)
+				{
+					if (!array_key_exists($criteria,$b[$key]) || !array_key_exists($criteria,$item) || $b[$key][$criteria] !== $item[$criteria])
+					{
+						$diff[$key] = array(
+							'metadata'=>$item,
+							"action"=>"Update",
+							"reason"=>"'$criteria' does not match",
+						);
+					}
 				}
+				//if ($b[$key] !== $item) 
+				//{ //contents different
+					//$diff[] = $key;
+				//}
 			}
 			else
 			{ //file does not exist
 				//$diff[] = $key;
-				$diff[$key] = array_merge($item, array(
+				$diff[$key] = array(
+					'metadata'=>$item,
 					"action"=>"Add",
-				));
+				);
 			}
 		}
 		return $diff;
@@ -241,9 +297,10 @@ class AwsBackup
 			//check if file in a exists in b
 			if (!array_key_exists($key, $b)) 
 			{ //file does not exist
-				$diff[$key] = array_merge($item, array(
+				$diff[$key] = array(
+					'metadata'=>$item,
 					"action"=>"Delete",
-				));
+				);
 			}
 		}
 		return $diff;
