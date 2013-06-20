@@ -5,6 +5,7 @@ PHP script for one way file syncing from a Linux directory to an AWS S3 Bucket.
 
 Disclaimer
 -----------
+This README needs to be updated to reflect the latest changes. 
 You take full responsibility for everything that happens as a result of this script to any of your files or your AWS account, including any charges that may be incurred.
 
 Inefficiencies
