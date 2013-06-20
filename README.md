@@ -10,7 +10,7 @@ You take full responsibility for everything that happens as a result of this scr
 
 Inefficiencies
 --------------
-This script is slow with large files as it calculates the MD5 hash for each one every time the script is run. It does handle large files (>100MB), but does not take advantage of being able to upload multiple parts in parallel. 
+This script is slow with large files when hash checking is enabled, since it calculates the hash for each file every time the script is run. It does handle large files (>100MB), but does not take advantage of being able to upload multiple parts in parallel. 
 
 Prerequisites
 -------------
